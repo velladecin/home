@@ -1,0 +1,192 @@
+#!/bin/bash
+Self=${0##*/}
+
+usage() {
+    /bin/cat <<USAGE
+Usage: $Self <option>
+Opions:
+    -h|--help
+        print this useful message
+    -c|--home
+        set DNS servers to "at home"
+    -o|--out
+        set DNS servers to "out" (of home)
+    -n|--nohookdhcp
+        stop resolv.conf mods via DHCP
+    -k|--hookdhcp
+        allow resolv.conf mods via DHCP
+    -s|--status
+        show current status
+USAGE
+}
+
+rootcheck() {
+    if [ `id -u` -ne 0 ]; then
+        echo "Permission denied (needs root privs)"
+        exit 1
+    fi
+}
+
+# DHCP
+DhcpConf="/etc/dhcpcd.conf"
+statusdhcp() {
+    nohookdns=`grep nohook $DhcpConf | grep resolv` 
+
+    if [ "x$nohookdns" = "x" ]; then
+        result="DNS no-hook is not set - DISABLED"
+        num=1
+    elif [[ $nohookdns =~ ^# ]]; then
+        result="DNS no-hook is disabled (mods via DHCP)"
+        num=2
+    else
+        result="DNS no-hook is enabled (no mods via DHCP)"
+        num=3
+    fi
+
+    if [ "$1" = "numeric" ]; then
+        return $num
+    fi
+
+    echo $result
+}
+
+# DNS
+ResolvConf="/etc/resolv.conf"
+_actiondns() {
+    local action=$1; shift
+    local dns=($@)
+
+    if [ "$action" = "set" ]; then
+        echo "# Set by $Self on `date` (`date +%s`)" > $ResolvConf # start fresh, timestamp for status
+    fi
+
+    found=0
+    for d in ${dns[@]}; do
+        if [ "$action" = "set" ]; then
+            echo "nameserver $d" >> $ResolvConf
+            continue
+        fi
+
+        if grep -qE "^[^#].*\s+${d}\s*$" $ResolvConf; then
+            let "found+=1"
+        fi
+    done
+
+    if [ "$action" = "set" ]; then
+        return
+    fi
+
+    # nameserver counts
+    if [ $found -eq 0 ]; then
+        return 2
+    fi
+
+    if [ $found -ne ${#dns[@]} ]; then
+        return 1
+    fi
+
+    nscount=`grep -cE "^nameserver [0-9]+\." $ResolvConf`
+    if [ $found -ne $nscount ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+athome() {
+    local action=$1
+    local dns=("61.9.133.193" "61.9.134.49")
+    [ "x$action" = "x" ] && action="get"
+
+    _actiondns $action ${dns[@]}
+    return $?
+}
+
+out() {
+    local action=$1
+    local dns=("8.8.4.4" "8.8.8.8")
+    [ "x$action" = "x" ] && action="get"
+
+    _actiondns $action ${dns[@]}
+    return $?
+}
+
+# Status
+resolvconfValid() {
+    # look for at least one line "nameserver"
+    if grep -qE "^nameserver [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\s*$" $ResolvConf; then
+        return 0
+    fi
+
+    echo "No 'nameserver' found in $ResolvConf"
+    return 1
+}
+
+statusdns() {
+    if resolvconfValid; then
+        msgts=`grep resolvconf $ResolvConf | awk '{print $13}' | sed 's/[()]//g'`
+
+        if [ "x$msgts" != "x" ] && [[ $msgts =~ ^[0-9]+$ ]]; then
+            statts=`stat -c "%Y" $ResolvConf`
+
+            if [ $msgts -ne $statts ]; then
+                echo "** Manually modified (msg:$msgts, stat:$statts)"
+            fi
+        fi
+
+        dnsunknown=0
+        athome "get" 
+        case "$?" in
+            0)  echo "DNS set to #at home#" ;;
+            1)  echo "DNS set >partially< to #at home#" ;;
+            2)  let "dnsunknown+=1"
+        esac
+
+        out "get"
+        case "$?" in
+            0)  echo "DNS set to #out#" ;;
+            1)  echo "DNS set >partially< to #out#" ;;
+            2)  let "dnsunknown+=1"
+        esac
+
+        if [ $dnsunknown -eq 2 ]; then
+            echo "DNS set to #unknown# nameserver(s)"
+        fi
+    fi
+}
+
+case "$1" in
+    -c|--home)
+        rootcheck
+        athome "set"
+        statusdns
+        ;;
+    -o|--out)
+        rootcheck
+        out "set"
+        statusdns
+        ;;
+    -n|--nohookdhcp)
+        rootcheck
+        sed -i 's/#nohook resolv/nohook resolv/' $DhcpConf
+        statusdhcp
+        ;;
+    -k|--hookdhcp)
+        rootcheck
+        statusdhcp "numeric"
+        if [ $? -eq 3 ]; then
+            sed -i 's/nohook resolv/#nohook resolv/' $DhcpConf
+        fi
+        statusdhcp
+        ;;
+    ""|-s|--status)
+        statusdns
+        statusdhcp
+        ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    *)  echo "Unknown option '$1'"
+        exit 127
+esac
