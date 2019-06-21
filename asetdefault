@@ -1,0 +1,109 @@
+#!/bin/bash
+
+ASOUNDRC_FILE=/home/vella/.asoundrc
+ASOUNDRC=`/bin/cat <<EOF
+pcm.!default {
+    type plug
+    slave.pcm {
+        type hw
+        card 0
+        device 3
+    }
+}
+
+ctl.!default {
+    type hw
+    card 0
+}
+EOF
+`
+
+
+#
+# Functions
+
+usage() {
+    self=${0##*/}
+    /bin/cat <<EOF
+Usage: $self <option>
+Options:
+    -a|--analog         set analog output (local speakers)
+    -o|--hdmi           set HDMI output
+    -s|--status         show current settings
+    (or no option)
+    -h|--help           show this helpful message
+EOF
+    exit $1
+}
+
+file_and_string_match() {
+    file=$1
+    string=$2
+
+    file_sum=`md5sum $file | awk '{print $1}'`
+    string_sum=`echo "$string" | md5sum | awk '{print $1}'`
+
+    if [ "$file_sum" = "$string_sum" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+backup_file() {
+    file=$1
+    now=`date +"%Y%m%d_%H:%M:%S"`
+
+    echo "Backing up file '$file' to '$file.$now'"
+    cp -a $file $file.$now
+}
+
+
+#
+# Main
+
+inarg=${1:---status} # default
+
+case "$inarg" in
+    -a|--analog)
+        if [ -f $ASOUNDRC_FILE ]; then
+            if ! file_and_string_match $ASOUNDRC_FILE "$ASOUNDRC"; then
+                backup_file $ASOUNDRC_FILE
+            fi 
+        fi
+
+        echo -n "Setting audio-out to 'ANALOG'.."
+        rm -f $ASOUNDRC_FILE
+        echo "  done"
+    ;;
+    -o|--hdmi)
+        if [ -f $ASOUNDRC_FILE ]; then
+            if ! file_and_string_match $ASOUNDRC_FILE "$ASOUNDRC"; then
+                backup_file $ASOUNDRC_FILE
+            fi
+        fi
+
+        echo -n "Setting audio-out to 'HDMI'.."
+        echo "$ASOUNDRC" > $ASOUNDRC_FILE
+        echo "  done"
+    ;;
+    -s|--status)
+        if [ -f $ASOUNDRC_FILE ]; then
+            if ! file_and_string_match $ASOUNDRC_FILE "$ASOUNDRC"; then
+                echo "Found existing '.asoundrc' file with unexpected content.."
+            fi
+            # TODO eval if this really is HDMI
+            output="HDMI"
+        else
+            output="ANALOG"
+        fi
+
+        echo "Audio-out set to '$output'"
+    ;;
+    -h|--help)
+        usage 0
+    ;;
+    *)
+    echo "Invalid option"; echo
+    usage 127
+esac
